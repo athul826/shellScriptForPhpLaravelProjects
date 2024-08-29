@@ -1,0 +1,21 @@
+# Node modules and other build artifacts
+node_modules/
+dist/
+build/
+
+# Environment and configuration files
+.env
+.env.local
+.env.production
+*.env
+
+# Secrets and credentials
+*.key
+*.pem
+*.cert
+secrets/
+keys/
+
+# Logs
+*.log
+
