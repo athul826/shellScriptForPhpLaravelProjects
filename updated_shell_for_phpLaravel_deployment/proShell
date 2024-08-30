@@ -5,6 +5,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 ORANGE='\033[0;33m'
+BOLD_ORANGE='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Function to check if a command exists
@@ -273,15 +274,16 @@ if [ "$SERVER_IP" = "$DNS_IP" ]; then
     print_color "DNS configuration is correct. $DOMAIN_NAME points to this server." "$GREEN"
 else
     print_color "Warning: DNS configuration may not be correct." "$YELLOW"
-    echo "Server IP: $SERVER_IP"
-    echo "DNS resolves to: $DNS_IP"
+    echo -e "${ORANGE}Server IP: ${BOLD_ORANGE}$SERVER_IP${NC}"
+    echo -e "${ORANGE}DNS resolves to: ${BOLD_ORANGE}$DNS_IP${NC}"
     echo "Please ensure your domain is pointing to the correct IP address."
 fi
 
 print_color "Script completed successfully." "$GREEN"
 print_color "Please check the following:" "$YELLOW"
-echo "1. Your Laravel application is correctly set up in $PROJECT_DIR"
-echo "2. The .env file in your Laravel application is correctly configured"
-echo "3. Your domain ($DOMAIN_NAME) is pointing to this server's IP address"
-echo "4. Nginx is running and the configuration is correct"
-print_color "If everything is set up correctly, your Laravel application should now be accessible at http://$DOMAIN_NAME" "$GREEN"
+echo -e "1. Your Laravel application is correctly set up in ${BOLD_ORANGE}$PROJECT_DIR${NC}"
+echo -e "2. The .env file in your Laravel application is correctly configured"
+echo -e "3. Your domain (${BOLD_ORANGE}$DOMAIN_NAME${NC}) is pointing to this server's IP address"
+echo -e "4. Nginx is running and the configuration is correct"
+print_color "If everything is set up correctly, your Laravel application should now be accessible at http://${BOLD_ORANGE}$DOMAIN_NAME${NC}" "$GREEN"
+print_color "Server IP address: ${BOLD_ORANGE}$SERVER_IP${NC}" "$GREEN"
