@@ -1,0 +1,234 @@
+#!/bin/bash
+
+# Color definitions
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to ensure Nginx configuration consistency
+ensure_nginx_config_consistency() {
+    local domain=$1
+    local sites_available="/etc/nginx/sites-available"
+    local sites_enabled="/etc/nginx/sites-enabled"
+
+    # Remove existing configurations in sites-enabled that don't match available configurations
+    for link in "$sites_enabled"/*; do
+        local linked_conf
+        linked_conf=$(basename "$link")
+        if [ "$linked_conf" != "default" ] && [ ! -f "$sites_available/$linked_conf" ]; then
+            echo -e "${YELLOW}Removing invalid symlink: $linked_conf${NC}"
+            sudo rm "$link"
+        fi
+    done
+
+    # Remove existing configurations in sites-available except 'default' and the current domain
+    for config in "$sites_available"/*; do
+        local conf_name
+        conf_name=$(basename "$config")
+        if [ "$conf_name" != "default" ] && [ "$conf_name" != "$domain" ]; then
+            echo -e "${YELLOW}Existing configuration found: $conf_name${NC}"
+            read -p "Do you want to remove it? (y/n): " remove_yn
+            if [ "$remove_yn" == "y" ]; then
+                sudo rm "$config"
+                sudo rm -f "$sites_enabled/$conf_name"
+                echo -e "${GREEN}Removed $conf_name${NC}"
+            fi
+        fi
+    done
+
+    # Create new configuration
+    echo "Creating a new Nginx configuration file for $domain..."
+    cat << EOF | sudo tee "$sites_available/$domain"
+server {
+    listen 80;
+    server_name $domain;
+    root $PROJECT_DIR/public;
+
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
+
+    index index.php;
+
+    charset utf-8;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location = /robots.txt  { access_log off; log_not_found off; }
+
+    error_page 404 /index.php;
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+}
+EOF
+
+    # Ensure the symlink in sites-enabled is correct
+    sudo ln -sf "$sites_available/$domain" "$sites_enabled/$domain"
+
+    echo -e "${GREEN}Nginx configuration for $domain is now set up.${NC}"
+}
+
+# Check if Nginx is installed
+if ! command_exists nginx; then
+    echo -e "${YELLOW}Nginx is not installed. Installing it now...${NC} "
+    sudo apt update
+    sudo apt install -y nginx
+    if ! command_exists nginx; then
+        echo -e "${RED}Failed to install Nginx. Please install it manually and run this script again.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Nginx installed successfully.${NC}"
+fi
+
+# Step 1: Prompt for project details
+read -p "Enter the project name: " PROJECT_NAME
+read -p "Enter the Git URL: " GIT_URL
+read -p "Enter the Git branch name: " GIT_BRANCH
+read -p "Enter the PHP version (e.g., 7.4, 8.1, 8.2): " PHP_VERSION
+read -p "Enter the domain name for Nginx configuration: " DOMAIN_NAME
+
+# Step 2: Add PPAs and Install PHP and required extensions
+echo -e "${GREEN}Adding necessary PPAs and installing PHP $PHP_VERSION and required extensions...${NC}"
+sudo add-apt-repository ppa:ondrej/php
+sudo apt update
+sudo apt install -y php$PHP_VERSION php$PHP_VERSION-cli php$PHP_VERSION-fpm php$PHP_VERSION-mysql php$PHP_VERSION-xml php$PHP_VERSION-mbstring php$PHP_VERSION-curl php$PHP_VERSION-intl php$PHP_VERSION-gd php$PHP_VERSION-zip
+
+if [[ $PHP_VERSION == 7.4 ]]; then
+    sudo add-apt-repository ppa:ondrej/apache2
+    sudo add-apt-repository ppa:ondrej/nginx
+fi
+
+# Step 3: Install Composer
+if ! command_exists composer; then
+    echo -e "${GREEN}Installing Composer...${NC}"
+    curl -sS https://getcomposer.org/installer -o composer-setup.php
+    sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+    rm composer-setup.php
+fi
+
+# Verify installations
+echo -e "${GREEN}Verifying installations...${NC}"
+php -v
+composer -v
+nginx -v
+
+# Step 4: Install and configure MySQL (if not already installed)
+if ! command_exists mysql; then
+    echo -e "${GREEN}Installing MySQL...${NC}"
+    sudo apt install -y mysql-server
+    sudo systemctl start mysql.service
+
+    # Secure MySQL installation
+    sudo mysql_secure_installation
+
+    echo -e "${GREEN}MySQL installed and secured.${NC}"
+else
+    echo -e "${GREEN}MySQL is already installed.${NC}"
+fi
+
+# Step 5: Fetch code from GitHub and set up project environment file
+echo -e "${GREEN}Fetching code from GitHub...${NC}"
+PROJECT_DIR="/var/www/html/$PROJECT_NAME"
+
+if [ -d "$PROJECT_DIR" ]; then
+    echo "Directory $PROJECT_DIR already exists."
+    echo -e "${YELLOW}Do you want to remove the existing directory and clone a new repository? (y/n):${NC} "
+    read -r remove_yn
+    if [ "$remove_yn" == "y" ]; then
+        echo "Removing existing directory..."
+        sudo rm -rf "$PROJECT_DIR"
+    else
+        echo -e "${RED}Aborting the script.${NC}"
+        exit 1
+    fi
+fi
+
+sudo mkdir -p "$PROJECT_DIR"
+sudo chown -R www-data:www-data "$PROJECT_DIR"
+
+git clone -b "$GIT_BRANCH" "$GIT_URL" "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to clone the repository.${NC}"; exit 1; }
+
+cd "$PROJECT_DIR" || { echo -e "${RED}Error: Project directory $PROJECT_DIR does not exist.${NC}"; exit 1; }
+
+# Set up .env file
+if [ -f .env.example ]; then
+    cp .env.example .env
+    echo -e "${GREEN}.env file created from .env.example${NC}"
+else
+    echo -e "${YELLOW}No .env.example file found. Please set up your .env file manually.${NC}"
+fi
+
+echo -e "${YELLOW}Do you want to edit the .env file now? (y/n):${NC} "
+read -r edit_env
+if [ "$edit_env" == "y" ]; then
+    sudo nano .env
+fi
+
+# Set permissions
+echo -e "${GREEN}Setting file permissions...${NC}"
+sudo chown -R www-data:www-data "$PROJECT_DIR"
+sudo find "$PROJECT_DIR" -type d -exec chmod 755 {} \;
+sudo find "$PROJECT_DIR" -type f -exec chmod 644 {} \;
+
+# Install dependencies
+echo -e "${GREEN}Installing Composer dependencies...${NC}"
+sudo -u www-data composer install --no-interaction --prefer-dist --optimize-autoloader
+
+# Generate application key
+echo -e "${GREEN}Generating application key...${NC}"
+sudo -u www-data php artisan key:generate
+
+# Run migrations
+echo -e "${YELLOW}Do you want to run database migrations? (y/n):${NC} "
+read -r run_migrations
+if [ "$run_migrations" == "y" ]; then
+    sudo -u www-data php artisan migrate
+fi
+
+# Handle Nginx configuration files
+echo -e "${GREEN}Handling Nginx configuration files...${NC}"
+ensure_nginx_config_consistency "$DOMAIN_NAME"
+
+echo -e "${GREEN}Testing Nginx configuration...${NC}"
+sudo nginx -t || { echo -e "${RED}Error: Nginx configuration test failed.${NC}"; exit 1; }
+
+echo -e "${GREEN}Restarting Nginx service...${NC}"
+sudo systemctl restart nginx || { echo -e "${RED}Error: Failed to restart Nginx service.${NC}"; exit 1; }
+
+# Verify DNS configuration
+echo -e "${GREEN}Verifying DNS configuration for $DOMAIN_NAME...${NC}"
+SERVER_IP=$(curl -s ifconfig.me)
+DNS_IP=$(dig +short $DOMAIN_NAME)
+
+if [ "$SERVER_IP" = "$DNS_IP" ]; then
+    echo -e "${GREEN}DNS configuration is correct. $DOMAIN_NAME points to this server.${NC}"
+else
+    echo -e "${YELLOW}Warning: DNS configuration may not be correct.${NC}"
+    echo "Server IP: $SERVER_IP"
+    echo "DNS resolves to: $DNS_IP"
+    echo "Please ensure your domain is pointing to the correct IP address."
+fi
+
+echo -e "${GREEN}Script completed successfully.${NC}"
+echo -e "${YELLOW}Please check the following:${NC}"
+echo "1. Your Laravel application is correctly set up in $PROJECT_DIR"
+echo "2. The .env file in your Laravel application is correctly configured"
+echo "3. Your domain ($DOMAIN_NAME) is pointing to this server's IP address"
+echo "4. Nginx is running and the configuration is correct"
+echo -e "${GREEN}If everything is set up correctly, your Laravel application should now be accessible at http://$DOMAIN_NAME${NC}"
