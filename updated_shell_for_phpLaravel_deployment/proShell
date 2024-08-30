@@ -4,11 +4,19 @@
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+ORANGE='\033[0;33m'
 NC='\033[0m' # No Color
 
 # Function to check if a command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Function to print messages in color
+print_color() {
+    local message=$1
+    local color=$2
+    echo -e "${color}${message}${NC}"
 }
 
 # Function to ensure Nginx configuration consistency
@@ -17,33 +25,21 @@ ensure_nginx_config_consistency() {
     local sites_available="/etc/nginx/sites-available"
     local sites_enabled="/etc/nginx/sites-enabled"
 
-    # Remove existing configurations in sites-enabled that don't match available configurations
-    for link in "$sites_enabled"/*; do
-        local linked_conf
-        linked_conf=$(basename "$link")
-        if [ "$linked_conf" != "default" ] && [ ! -f "$sites_available/$linked_conf" ]; then
-            echo -e "${YELLOW}Removing invalid symlink: $linked_conf${NC}"
-            sudo rm "$link"
-        fi
-    done
-
-    # Remove existing configurations in sites-available except 'default' and the current domain
+    # Remove existing configurations except 'default'
     for config in "$sites_available"/*; do
-        local conf_name
-        conf_name=$(basename "$config")
-        if [ "$conf_name" != "default" ] && [ "$conf_name" != "$domain" ]; then
-            echo -e "${YELLOW}Existing configuration found: $conf_name${NC}"
+        if [ "$(basename "$config")" != "default" ] && [ "$(basename "$config")" != "$domain" ]; then
+            print_color "Existing configuration found: $(basename "$config")" "$YELLOW"
             read -p "Do you want to remove it? (y/n): " remove_yn
             if [ "$remove_yn" == "y" ]; then
                 sudo rm "$config"
-                sudo rm -f "$sites_enabled/$conf_name"
-                echo -e "${GREEN}Removed $conf_name${NC}"
+                sudo rm -f "$sites_enabled/$(basename "$config")"
+                print_color "Removed $(basename "$config")" "$GREEN"
             fi
         fi
     done
 
     # Create new configuration
-    echo "Creating a new Nginx configuration file for $domain..."
+    print_color "Creating a new Nginx configuration file for $domain..." "$GREEN"
     cat << EOF | sudo tee "$sites_available/$domain"
 server {
     listen 80;
@@ -81,19 +77,19 @@ EOF
     # Ensure the symlink in sites-enabled is correct
     sudo ln -sf "$sites_available/$domain" "$sites_enabled/$domain"
 
-    echo -e "${GREEN}Nginx configuration for $domain is now set up.${NC}"
+    print_color "Nginx configuration for $domain is now set up." "$GREEN"
 }
 
 # Check if Nginx is installed
 if ! command_exists nginx; then
-    echo -e "${YELLOW}Nginx is not installed. Installing it now...${NC} "
+    print_color "Nginx is not installed. Installing it now..." "$YELLOW"
     sudo apt update
     sudo apt install -y nginx
     if ! command_exists nginx; then
-        echo -e "${RED}Failed to install Nginx. Please install it manually and run this script again.${NC}"
+        print_color "Failed to install Nginx. Please install it manually and run this script again." "$RED"
         exit 1
     fi
-    echo -e "${GREEN}Nginx installed successfully.${NC}"
+    print_color "Nginx installed successfully." "$GREEN"
 fi
 
 # Step 1: Prompt for project details
@@ -104,7 +100,7 @@ read -p "Enter the PHP version (e.g., 7.4, 8.1, 8.2): " PHP_VERSION
 read -p "Enter the domain name for Nginx configuration: " DOMAIN_NAME
 
 # Step 2: Add PPAs and Install PHP and required extensions
-echo -e "${GREEN}Adding necessary PPAs and installing PHP $PHP_VERSION and required extensions...${NC}"
+print_color "Adding necessary PPAs and installing PHP $PHP_VERSION and required extensions..." "$GREEN"
 sudo add-apt-repository ppa:ondrej/php
 sudo apt update
 sudo apt install -y php$PHP_VERSION php$PHP_VERSION-cli php$PHP_VERSION-fpm php$PHP_VERSION-mysql php$PHP_VERSION-xml php$PHP_VERSION-mbstring php$PHP_VERSION-curl php$PHP_VERSION-intl php$PHP_VERSION-gd php$PHP_VERSION-zip
@@ -116,45 +112,80 @@ fi
 
 # Step 3: Install Composer
 if ! command_exists composer; then
-    echo -e "${GREEN}Installing Composer...${NC}"
+    print_color "Installing Composer..." "$GREEN"
     curl -sS https://getcomposer.org/installer -o composer-setup.php
     sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
     rm composer-setup.php
 fi
 
 # Verify installations
-echo -e "${GREEN}Verifying installations...${NC}"
+print_color "Verifying installations..." "$GREEN"
 php -v
 composer -v
 nginx -v
 
-# Step 4: Install and configure MySQL (if not already installed)
-if ! command_exists mysql; then
-    echo -e "${GREEN}Installing MySQL...${NC}"
-    sudo apt install -y mysql-server
-    sudo systemctl start mysql.service
+# Step 4: Install and configure MySQL
+print_color "Installing MySQL..." "$GREEN"
+sudo apt update
+sudo apt install -y mysql-server
 
-    # Secure MySQL installation
-    sudo mysql_secure_installation
+print_color "Starting MySQL service..." "$GREEN"
+sudo systemctl start mysql.service
 
-    echo -e "${GREEN}MySQL installed and secured.${NC}"
-else
-    echo -e "${GREEN}MySQL is already installed.${NC}"
-fi
+# Prompt to customize the ALTER USER command
+while true; do
+    echo "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'password';"
+    print_color "Do you want to edit this command? (y/n):" "$YELLOW"
+    read -r yn
+    case $yn in
+        [Yy]* ) 
+            read -p "Enter the new MySQL root password: " MYSQL_ROOT_PASSWORD
+            ALTER_COMMAND="ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_ROOT_PASSWORD';"
+            echo "Executing: $ALTER_COMMAND"
+            sudo mysql -e "$ALTER_COMMAND"
+            break;;
+        [Nn]* ) 
+            MYSQL_ROOT_PASSWORD="password"
+            ALTER_COMMAND="ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_ROOT_PASSWORD';"
+            echo "Executing default command: $ALTER_COMMAND"
+            sudo mysql -e "$ALTER_COMMAND"
+            break;;
+        * ) echo "Please answer yes or no.";;
+    esac
+done
 
-# Step 5: Fetch code from GitHub and set up project environment file
-echo -e "${GREEN}Fetching code from GitHub...${NC}"
+# Confirm configuration success
+while true; do
+    print_color "MySQL root user configured successfully. Do you want to exit MySQL setup? (y/n):" "$YELLOW"
+    read -r yn
+    case $yn in
+        [Yy]* ) break;;
+        [Nn]* ) echo "Returning to MySQL setup...";;
+        * ) echo "Please answer yes or no.";;
+    esac
+done
+
+# Test MySQL access
+print_color "Testing MySQL access..." "$GREEN"
+mysql -u root -p$MYSQL_ROOT_PASSWORD -e "SHOW DATABASES;" || { print_color "Error: MySQL access test failed." "$RED"; exit 1; }
+
+# Provide access to MySQL prompt for further database creation
+print_color "You can now create a new database and use it." "$GREEN"
+mysql -u root -p$MYSQL_ROOT_PASSWORD || { print_color "Error: Failed to access MySQL prompt." "$RED"; exit 1; }
+
+# Fetch code from GitHub and set up project environment file
+print_color "Fetching code from GitHub..." "$GREEN"
 PROJECT_DIR="/var/www/html/$PROJECT_NAME"
 
 if [ -d "$PROJECT_DIR" ]; then
     echo "Directory $PROJECT_DIR already exists."
-    echo -e "${YELLOW}Do you want to remove the existing directory and clone a new repository? (y/n):${NC} "
+    print_color "Do you want to remove the existing directory and clone a new repository? (y/n):" "$YELLOW"
     read -r remove_yn
     if [ "$remove_yn" == "y" ]; then
         echo "Removing existing directory..."
         sudo rm -rf "$PROJECT_DIR"
     else
-        echo -e "${RED}Aborting the script.${NC}"
+        print_color "Aborting the script." "$RED"
         exit 1
     fi
 fi
@@ -162,73 +193,95 @@ fi
 sudo mkdir -p "$PROJECT_DIR"
 sudo chown -R www-data:www-data "$PROJECT_DIR"
 
-git clone -b "$GIT_BRANCH" "$GIT_URL" "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to clone the repository.${NC}"; exit 1; }
+git clone -b "$GIT_BRANCH" "$GIT_URL" "$PROJECT_DIR" || { print_color "Error: Failed to clone the repository." "$RED"; exit 1; }
 
-cd "$PROJECT_DIR" || { echo -e "${RED}Error: Project directory $PROJECT_DIR does not exist.${NC}"; exit 1; }
+cd "$PROJECT_DIR" || { print_color "Error: Project directory $PROJECT_DIR does not exist." "$RED"; exit 1; }
 
-# Set up .env file
-if [ -f .env.example ]; then
-    cp .env.example .env
-    echo -e "${GREEN}.env file created from .env.example${NC}"
-else
-    echo -e "${YELLOW}No .env.example file found. Please set up your .env file manually.${NC}"
+# Look for potential environment files and create .env
+ENV_FILE_FOUND=false
+for env_file in .env.example example.env env.example; do
+    if [ -f "$env_file" ]; then
+        echo "Creating .env file from $env_file..."
+        cp "$env_file" .env
+        ENV_FILE_FOUND=true
+        break
+    fi
+done
+
+if [ "$ENV_FILE_FOUND" = false ]; then
+    print_color "Error: No environment file (.env.example, example.env, or env.example) found. Please create a .env file manually." "$RED"
+    exit 1
 fi
 
-echo -e "${YELLOW}Do you want to edit the .env file now? (y/n):${NC} "
-read -r edit_env
-if [ "$edit_env" == "y" ]; then
-    sudo nano .env
-fi
+# Prompt to set up .env file credentials
+while true; do
+    print_color ".env file has been created. Do you want to set up .env file credentials? (y/n):" "$YELLOW"
+    read -r yn
+    case $yn in
+        [Yy]* ) 
+            echo "Opening .env file for editing..."
+            sudo vim .env
+            break;;
+        [Nn]* ) 
+            echo "Skipping .env file setup. Make sure to configure it before proceeding."
+            break;;
+        * ) echo "Please answer yes or no.";;
+    esac
+done
 
 # Set permissions
-echo -e "${GREEN}Setting file permissions...${NC}"
+print_color "Setting file permissions..." "$GREEN"
 sudo chown -R www-data:www-data "$PROJECT_DIR"
 sudo find "$PROJECT_DIR" -type d -exec chmod 755 {} \;
 sudo find "$PROJECT_DIR" -type f -exec chmod 644 {} \;
 
+# Ensure necessary directories are writable
+print_color "Ensuring necessary directories are writable..." "$GREEN"
+sudo chmod -R 775 "$PROJECT_DIR/storage" "$PROJECT_DIR/bootstrap/cache"
+
 # Install dependencies
-echo -e "${GREEN}Installing Composer dependencies...${NC}"
+print_color "Installing Composer dependencies..." "$GREEN"
 sudo -u www-data composer install --no-interaction --prefer-dist --optimize-autoloader
 
 # Generate application key
-echo -e "${GREEN}Generating application key...${NC}"
+print_color "Generating application key..." "$GREEN"
 sudo -u www-data php artisan key:generate
 
 # Run migrations
-echo -e "${YELLOW}Do you want to run database migrations? (y/n):${NC} "
+print_color "Do you want to run database migrations? (y/n):" "$YELLOW"
 read -r run_migrations
 if [ "$run_migrations" == "y" ]; then
     sudo -u www-data php artisan migrate
 fi
 
 # Handle Nginx configuration files
-echo -e "${GREEN}Handling Nginx configuration files...${NC}"
+print_color "Handling Nginx configuration files..." "$GREEN"
 ensure_nginx_config_consistency "$DOMAIN_NAME"
 
-echo -e "${GREEN}Testing Nginx configuration...${NC}"
-sudo nginx -t || { echo -e "${RED}Error: Nginx configuration test failed.${NC}"; exit 1; }
+print_color "Testing Nginx configuration..." "$GREEN"
+sudo nginx -t || { print_color "Error: Nginx configuration test failed." "$RED"; exit 1; }
 
-echo -e "${GREEN}Restarting Nginx service...${NC}"
-sudo systemctl restart nginx || { echo -e "${RED}Error: Failed to restart Nginx service.${NC}"; exit 1; }
+print_color "Restarting Nginx service..." "$GREEN"
+sudo systemctl restart nginx || { print_color "Error: Failed to restart Nginx service." "$RED"; exit 1; }
 
 # Verify DNS configuration
-echo -e "${GREEN}Verifying DNS configuration for $DOMAIN_NAME...${NC}"
+print_color "Verifying DNS configuration for $DOMAIN_NAME..." "$GREEN"
 SERVER_IP=$(curl -s ifconfig.me)
 DNS_IP=$(dig +short $DOMAIN_NAME)
 
 if [ "$SERVER_IP" = "$DNS_IP" ]; then
-    echo -e "${GREEN}DNS configuration is correct. $DOMAIN_NAME points to this server.${NC}"
+    print_color "DNS configuration is correct. $DOMAIN_NAME points to this server." "$GREEN"
 else
-    echo -e "${YELLOW}Warning: DNS configuration may not be correct.${NC}"
+    print_color "Warning: DNS configuration may not be correct." "$YELLOW"
     echo "Server IP: $SERVER_IP"
     echo "DNS resolves to: $DNS_IP"
     echo "Please ensure your domain is pointing to the correct IP address."
 fi
 
-echo -e "${GREEN}Script completed successfully.${NC}"
-echo -e "${YELLOW}Please check the following:${NC}"
+print_color "Script completed successfully." "$GREEN"
+print_color "Please check the following:" "$YELLOW"
 echo "1. Your Laravel application is correctly set up in $PROJECT_DIR"
 echo "2. The .env file in your Laravel application is correctly configured"
 echo "3. Your domain ($DOMAIN_NAME) is pointing to this server's IP address"
 echo "4. Nginx is running and the configuration is correct"
-echo -e "${GREEN}If everything is set up correctly, your Laravel application should now be accessible at http://$DOMAIN_NAME${NC}"
+print_color "If everything is set up correctly, your Laravel application should now be accessible at http://$DOMAIN_NAME" "$GREEN"
